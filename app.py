@@ -16,17 +16,18 @@ OTC_KEY = os.environ.get("OTCHARTS_API_KEY")
 TG = f"https://api.telegram.org/bot{TOKEN}"
 OTC_API = "https://otcharts.com/v1/candles"
 
-PAIRS = [
-    "EURUSD_otc",
-    "GBPUSD_otc",
-    "USDJPY_otc",
-    "AUDUSD_otc",
-    "BTCUSD_otc"
-]
+PAIRS = {
+    "EURUSD_otc": "EUR/USD OTC",
+    "GBPUSD_otc": "GBP/USD OTC",
+    "USDJPY_otc": "USD/JPY OTC",
+    "AUDUSD_otc": "AUD/USD OTC",
+    "BTCUSD_otc": "BTC/USD OTC"
+}
 
-# ---------------------------
-# TELEGRAM
-# ---------------------------
+
+# =========================
+# TELEGRAM API
+# =========================
 
 def tg(method, data=None):
     r = requests.post(
@@ -34,11 +35,12 @@ def tg(method, data=None):
         json=data or {},
         timeout=20
     )
+
     r.raise_for_status()
     result = r.json()
 
     if not result.get("ok"):
-        raise Exception(result)
+        raise Exception(str(result))
 
     return result
 
@@ -55,7 +57,7 @@ def send(chat_id, text, keyboard=None):
     tg("sendMessage", data)
 
 
-def menu_keyboard():
+def main_menu():
     return {
         "keyboard": [
             [{"text": "/start"}, {"text": "/help"}],
@@ -65,7 +67,7 @@ def menu_keyboard():
     }
 
 
-def pair_keyboard():
+def pair_menu():
     return {
         "inline_keyboard": [
             [
@@ -83,19 +85,21 @@ def pair_keyboard():
     }
 
 
-# ---------------------------
-# MARKET DATA
-# ---------------------------
+# =========================
+# OTCHARTS DATA
+# =========================
 
 def get_candles(symbol):
+
     if not OTC_KEY:
-        raise Exception("OTCHARTS_API_KEY ntabwo yashyizweho.")
+        raise Exception(
+            "OTCHARTS_API_KEY ntabwo iri muri Render."
+        )
 
     r = requests.get(
         OTC_API,
         headers={
-            "Authorization": f"Bearer {OTC_KEY}",
-            "User-Agent": "TokyoTradingBot/1.0"
+            "Authorization": f"Bearer {OTC_KEY}"
         },
         params={
             "venue": "otc",
@@ -103,32 +107,35 @@ def get_candles(symbol):
             "tf": 60,
             "limit": 200
         },
-        timeout=25
+        timeout=30
     )
 
-    if r.status_code != 200:
-        raise Exception(f"OTCharts API error: {r.status_code} {r.text[:300]}")
+    r.raise_for_status()
 
     data = r.json()
+
     candles = data.get("candles", [])
 
-    if len(candles) < 50:
-        raise Exception("Candle data idahagije.")
+    if len(candles) < 60:
+        raise Exception(
+            "OTC candles ntizihagije kugira ngo analysis ikorwe."
+        )
 
     return candles
 
 
-# ---------------------------
+# =========================
 # INDICATORS
-# ---------------------------
+# =========================
 
 def ema(values, period):
+
     if len(values) < period:
         return None
 
-    alpha = 2 / (period + 1)
-
     result = sum(values[:period]) / period
+
+    alpha = 2 / (period + 1)
 
     for value in values[period:]:
         result = alpha * value + (1 - alpha) * result
@@ -137,16 +144,17 @@ def ema(values, period):
 
 
 def rsi(values, period=14):
+
     if len(values) < period + 1:
         return None
 
-    gains = []
-    losses = []
+    changes = [
+        values[i] - values[i-1]
+        for i in range(1, len(values))
+    ]
 
-    for i in range(1, len(values)):
-        change = values[i] - values[i - 1]
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
+    gains = [max(x, 0) for x in changes]
+    losses = [max(-x, 0) for x in changes]
 
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
@@ -160,8 +168,6 @@ def rsi(values, period=14):
 
 
 def macd(values):
-    if len(values) < 35:
-        return None
 
     fast = ema(values, 12)
     slow = ema(values, 26)
@@ -172,14 +178,21 @@ def macd(values):
     return fast - slow
 
 
-# ---------------------------
-# ANALYSIS
-# ---------------------------
+# =========================
+# ANALYSIS ENGINE
+# =========================
 
 def analyze(candles):
-    closes = [float(c["close"]) for c in candles]
-    highs = [float(c["high"]) for c in candles]
-    lows = [float(c["low"]) for c in candles]
+
+    closes = [
+        float(c["close"])
+        for c in candles
+    ]
+
+    opens = [
+        float(c["open"])
+        for c in candles
+    ]
 
     last = closes[-1]
 
@@ -192,62 +205,61 @@ def analyze(candles):
 
     momentum = closes[-1] - closes[-5]
 
-    # Candle body and range
-    candle_range = highs[-1] - lows[-1]
-    body = closes[-1] - float(candles[-1]["open"])
-
-    if candle_range == 0:
-        candle_strength = 0
-    else:
-        candle_strength = abs(body) / candle_range
-
     bullish = 0
     bearish = 0
 
-    # EMA trend
+    # EMA 9/21
     if ema9 > ema21:
         bullish += 1
+
     elif ema9 < ema21:
         bearish += 1
 
+    # EMA 50 trend
     if last > ema50:
         bullish += 1
+
     elif last < ema50:
         bearish += 1
 
     # RSI
     if 50 < rsi14 < 70:
         bullish += 1
+
     elif 30 < rsi14 < 50:
         bearish += 1
 
     # MACD
     if macd_value > 0:
         bullish += 1
+
     elif macd_value < 0:
         bearish += 1
 
     # Momentum
     if momentum > 0:
         bullish += 1
+
     elif momentum < 0:
         bearish += 1
 
+    direction = "NONE"
+
     if bullish >= 4 and bullish > bearish:
         direction = "BUY"
-        score = bullish
 
     elif bearish >= 4 and bearish > bullish:
         direction = "SELL"
-        score = bearish
 
-    else:
+    # Strength filter
+    if direction == "BUY" and rsi14 >= 70:
         direction = "NONE"
-        score = max(bullish, bearish)
+
+    if direction == "SELL" and rsi14 <= 30:
+        direction = "NONE"
 
     return {
         "direction": direction,
-        "score": score,
         "bullish": bullish,
         "bearish": bearish,
         "rsi": rsi14,
@@ -256,70 +268,91 @@ def analyze(candles):
         "ema50": ema50,
         "macd": macd_value,
         "momentum": momentum,
-        "candle_strength": candle_strength,
         "price": last
     }
 
 
-# ---------------------------
-# SIGNAL
-# ---------------------------
+# =========================
+# SIGNAL ENGINE
+# =========================
 
 def make_signal(chat_id, symbol):
+
     try:
+
         candles = get_candles(symbol)
+
         result = analyze(candles)
 
+        name = PAIRS[symbol]
+
         if result["direction"] == "NONE":
+
             send(
                 chat_id,
-                "⚠️ NTA SIGNAL\n\n"
-                f"Asset: {symbol}\n"
+                "⚠️ NO SIGNAL\n\n"
+                f"Asset: {name}\n"
                 f"RSI: {result['rsi']:.2f}\n"
-                f"Bullish votes: {result['bullish']}/5\n"
-                f"Bearish votes: {result['bearish']}/5\n\n"
+                f"Bullish: {result['bullish']}/5\n"
+                f"Bearish: {result['bearish']}/5\n\n"
                 "Conditions ntizihagije.\n"
                 "Tegereza indi setup."
             )
+
             return
 
         direction = result["direction"]
 
+        emoji = (
+            "🟢 BUY"
+            if direction == "BUY"
+            else "🔴 SELL"
+        )
+
         text = (
             "TOKYO OTC SIGNAL\n\n"
-            f"Asset: {symbol}\n"
-            f"Direction: {'🟢 BUY' if direction == 'BUY' else '🔴 SELL'}\n"
-            "Expiry: 1 minute\n\n"
+            f"Asset: {name}\n"
+            f"Direction: {emoji}\n"
+            "Expiry: 1 minute\n"
+            "Signal window: 8 seconds\n\n"
             "ANALYSIS\n"
             f"RSI: {result['rsi']:.2f}\n"
-            f"Bullish: {result['bullish']}/5\n"
-            f"Bearish: {result['bearish']}/5\n"
-            f"EMA trend: {'Bullish' if result['ema9'] > result['ema21'] else 'Bearish'}\n"
-            f"Momentum: {'Positive' if result['momentum'] > 0 else 'Negative'}\n\n"
-            "⚠️ Score ntabwo ari win-rate.\n"
-            "Accuracy ya strategy ntiramenyekana."
+            f"EMA 9: {result['ema9']:.6f}\n"
+            f"EMA 21: {result['ema21']:.6f}\n"
+            f"EMA 50: {result['ema50']:.6f}\n"
+            f"MACD: {result['macd']:.6f}\n"
+            f"Bullish votes: {result['bullish']}/5\n"
+            f"Bearish votes: {result['bearish']}/5\n\n"
+            "⚠️ Iyi signal ni prediction.\n"
+            "Win rate yayo ntiramenyekana."
         )
 
         send(chat_id, text)
 
     except Exception as e:
-        logging.exception("Signal error")
+
+        logging.exception("Signal failure")
 
         send(
             chat_id,
-            "❌ Signal yanze kuboneka.\n\n"
-            f"Impamvu: {str(e)[:250]}"
+            "❌ SIGNAL ERROR\n\n"
+            f"{str(e)[:300]}"
         )
 
 
-# ---------------------------
-# TELEGRAM COMMANDS
-# ---------------------------
+# =========================
+# COMMANDS
+# =========================
 
 def process_message(message):
-    chat = message.get("chat", {})
-    chat_id = chat.get("id")
-    text = message.get("text", "").strip()
+
+    chat_id = message.get(
+        "chat", {}
+    ).get("id")
+
+    text = message.get(
+        "text", ""
+    ).strip()
 
     if not chat_id or not text:
         return
@@ -327,96 +360,140 @@ def process_message(message):
     command = text.split()[0].split("@")[0].lower()
 
     if command == "/start":
+
         send(
             chat_id,
-            "Murakaza neza kuri Tokyo OTC Signal Bot! 🤖\n\n"
-            "Bot isesengura OTC candles.\n\n"
-            "Koresha /signal kugira ngo uhitemo asset.",
-            menu_keyboard()
+            "Murakaza neza kuri Tokyo Trading Bot! 🤖\n\n"
+            "Koresha /signal kugira ngo uhitemo OTC asset.\n\n"
+            "/start - Gutangira\n"
+            "/help - Amabwiriza\n"
+            "/signal - Gusaba signal",
+            main_menu()
         )
 
     elif command == "/help":
+
         send(
             chat_id,
-            "TOKYO OTC BOT\n\n"
+            "TOKYO OTC SIGNAL BOT\n\n"
             "/start - Gutangira\n"
             "/help - Amabwiriza\n"
             "/signal - Gusaba signal\n\n"
-            "Signals zishingiye ku indicators.\n"
-            "Nta accuracy ya 80% yemejwe.\n"
-            "Signal ishobora gutsindwa.",
-            menu_keyboard()
+            "Bot isesengura OTC candles.\n"
+            "Nta accuracy ya 80% yemejwe.",
+            main_menu()
         )
 
     elif command == "/signal":
+
         send(
             chat_id,
-            "Hitamo OTC asset:",
-            pair_keyboard()
+            "Hitamo asset:",
+            pair_menu()
         )
 
 
-# ---------------------------
+# =========================
 # WEBHOOK
-# ---------------------------
+# =========================
 
 @app.route("/", methods=["GET"])
 def home():
-    return "Tokyo OTC Bot is running!", 200
+
+    return "Tokyo Trading Bot is running!", 200
 
 
 @app.route("/telegram", methods=["POST"])
 def webhook():
 
     if SECRET:
+
         received = request.headers.get(
-            "X-Telegram-Bot-Api-Secret-Token", ""
+            "X-Telegram-Bot-Api-Secret-Token",
+            ""
         )
 
         if received != SECRET:
             return "Unauthorized", 401
 
-    update = request.get_json(silent=True) or {}
+    update = request.get_json(
+        silent=True
+    ) or {}
 
     if "message" in update:
-        process_message(update["message"])
+
+        process_message(
+            update["message"]
+        )
 
     elif "callback_query" in update:
+
         callback = update["callback_query"]
 
-        tg("answerCallbackQuery", {
-            "callback_query_id": callback["id"]
-        })
+        tg(
+            "answerCallbackQuery",
+            {
+                "callback_query_id": callback["id"]
+            }
+        )
 
         symbol = callback.get("data")
-        chat_id = callback.get("message", {}).get("chat", {}).get("id")
+
+        chat_id = callback.get(
+            "message", {}
+        ).get(
+            "chat", {}
+        ).get("id")
 
         if symbol in PAIRS and chat_id:
-            make_signal(chat_id, symbol)
+
+            make_signal(
+                chat_id,
+                symbol
+            )
 
     return "OK", 200
 
 
-# ---------------------------
+# =========================
 # INITIAL SETUP
-# ---------------------------
+# =========================
 
-def setup():
+def setup_bot():
+
     commands = [
-        {"command": "start", "description": "Gutangira"},
-        {"command": "help", "description": "Amabwiriza"},
-        {"command": "signal", "description": "Gusaba signal"}
+        {
+            "command": "start",
+            "description": "Gutangira"
+        },
+        {
+            "command": "help",
+            "description": "Amabwiriza"
+        },
+        {
+            "command": "signal",
+            "description": "Gusaba signal"
+        }
     ]
 
-    tg("setMyCommands", {"commands": commands})
-
-    tg("setChatMenuButton", {
-        "menu_button": {
-            "type": "commands"
+    tg(
+        "setMyCommands",
+        {
+            "commands": commands
         }
-    })
+    )
+
+    tg(
+        "setChatMenuButton",
+        {
+            "menu_button": {
+                "type": "commands"
+            }
+        }
+    )
 
     if RENDER_URL:
+
         data = {
             "url": f"{RENDER_URL}/telegram"
         }
@@ -424,17 +501,37 @@ def setup():
         if SECRET:
             data["secret_token"] = SECRET
 
-        tg("setWebhook", data)
+        tg(
+            "setWebhook",
+            data
+        )
 
 
 if TOKEN:
+
     try:
-        setup()
-        logging.info("Telegram setup completed.")
+
+        setup_bot()
+
+        logging.info(
+            "Telegram setup completed."
+        )
+
     except Exception:
-        logging.exception("Setup failed")
+
+        logging.exception(
+            "Telegram setup failed."
+        )
 
 
 if __name__ == "__main__":
+
     from waitress import serve
-    serve(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
+    serve(
+        app,
+        host="0.0.0.0",
+        port=int(
+            os.environ.get("PORT", 10000)
+        )
+    )
